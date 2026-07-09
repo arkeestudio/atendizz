@@ -24,7 +24,7 @@ async function handle(request: Request) {
   if (request.method === "GET") {
     if (resource === "contacts") {
       const { data } = await (supabaseAdmin as any).from("crm_cards")
-        .select("id, numero, contato_nome, tags, stage_id, valor, utm_source, utm_medium, utm_campaign, created_at")
+        .select("id, numero, contato_nome:nome, tags, stage_id, valor, utm_source, utm_medium, utm_campaign, created_at")
         .eq("company_id", companyId).order("created_at", { ascending: false }).limit(200);
       return Response.json({ data: data ?? [] });
     }

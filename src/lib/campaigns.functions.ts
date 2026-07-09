@@ -65,7 +65,7 @@ export const previewAudience = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const { supabase, userId } = context;
     const companyId = await resolveCompanyId(supabase, userId);
-    let q = supabase.from("crm_cards").select("numero, contato_nome, tags").eq("company_id", companyId);
+    let q = supabase.from("crm_cards").select("numero, contato_nome:nome, tags").eq("company_id", companyId);
     if (data.tags && data.tags.length) q = q.overlaps("tags", data.tags);
     const { data: rows, error } = await q;
     if (error) throw new Error(error.message);
@@ -140,7 +140,7 @@ export const startCampaign = createServerFn({ method: "POST" })
     if (c.status === "enviando" || c.status === "agendada") throw new Error("Campanha já está em execução.");
 
     // Populate targets from CRM cards filtered by tags
-    let q = supabase.from("crm_cards").select("numero, contato_nome, tags").eq("company_id", companyId);
+    let q = supabase.from("crm_cards").select("numero, contato_nome:nome, tags").eq("company_id", companyId);
     if ((c.filtro_tags ?? []).length) q = q.overlaps("tags", c.filtro_tags as string[]);
     const { data: rows } = await q;
     const map = new Map<string, string | null>();
