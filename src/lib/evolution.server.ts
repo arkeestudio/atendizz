@@ -153,6 +153,26 @@ export async function evoSendText(instanceName: string, number: string, text: st
   });
 }
 
+export async function evoSendMedia(
+  instanceName: string,
+  number: string,
+  mediaUrl: string,
+  caption?: string,
+) {
+  // Evolution v2: POST /message/sendMedia/{instance}
+  // `media` aceita URL pública ou base64. Aqui usamos a URL do Supabase Storage.
+  return evo(`/message/sendMedia/${encodeURIComponent(instanceName)}`, {
+    method: "POST",
+    json: {
+      number,
+      mediatype: "image",
+      media: mediaUrl,
+      caption: caption || "",
+      fileName: "imagem.jpg",
+    },
+  });
+}
+
 export async function evoSendPresence(instanceName: string, number: string, presence: "composing" | "paused" | "available", delayMs = 1500) {
   try {
     await evo(`/chat/sendPresence/${encodeURIComponent(instanceName)}`, {

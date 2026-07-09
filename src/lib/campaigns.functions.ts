@@ -82,6 +82,7 @@ type CampaignInput = {
   id?: string;
   nome: string;
   mensagem: string;
+  media_url?: string | null;
   agendado_para?: string | null;
   filtro_tags?: string[];
   intervalo_min_seg?: number;
@@ -101,6 +102,7 @@ export const saveCampaign = createServerFn({ method: "POST" })
       created_by: userId,
       nome: data.nome,
       mensagem: data.mensagem,
+      media_url: data.media_url || null,
       agendado_para: data.agendado_para || null,
       filtro_tags: data.filtro_tags ?? [],
       intervalo_min_seg: Math.max(2, data.intervalo_min_seg ?? 5),

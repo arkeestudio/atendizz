@@ -10,7 +10,7 @@ export const Route = createFileRoute("/api/public/hooks/process-campaigns")({
       POST: async () => {
         try {
           const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-          const { evoSendText } = await import("@/lib/evolution.server");
+          const { evoSendText, evoSendMedia } = await import("@/lib/evolution.server");
 
           // Promove agendadas que chegaram a hora
           await supabaseAdmin
@@ -62,7 +62,11 @@ export const Route = createFileRoute("/api/public/hooks/process-campaigns")({
             for (const t of pending as any[]) {
               try {
                 const texto = String(c.mensagem || "").replace(/\{\{nome\}\}/gi, t.contato_nome || "");
-                await evoSendText(inst.instance_name, t.contato_numero, texto);
+                if (c.media_url) {
+                  await evoSendMedia(inst.instance_name, t.contato_numero, c.media_url, texto);
+                } else {
+                  await evoSendText(inst.instance_name, t.contato_numero, texto);
+                }
                 await supabaseAdmin.from("campaign_target").update({
                   status: "enviado",
                   enviado_em: new Date().toISOString(),

@@ -14,8 +14,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Loader2, Plus, Play, Pause, Trash2, X, Megaphone, Users } from "lucide-react";
+import { Loader2, Plus, Play, Pause, Trash2, X, Megaphone, Users, ImagePlus } from "lucide-react";
 import { brand } from "@/config/brand";
+import { supabase } from "@/integrations/supabase/client";
 
 export const Route = createFileRoute("/app/campanhas")({
   head: () => ({ meta: [{ title: `${brand.name} — Campanhas` }] }),
@@ -51,6 +52,26 @@ function CampanhasPage() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
   const [preview, setPreview] = useState<{ total: number; sample: any[] } | null>(null);
+  const [uploading, setUploading] = useState(false);
+
+  async function handleFile(file: File) {
+    if (!file.type.startsWith("image/")) { toast.error("Selecione um arquivo de imagem."); return; }
+    if (file.size > 8 * 1024 * 1024) { toast.error("Imagem muito grande (máx. 8MB)."); return; }
+    setUploading(true);
+    try {
+      const ext = ((file.name.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "")) || "jpg";
+      const path = `${crypto.randomUUID()}.${ext}`;
+      const { error } = await supabase.storage.from("campaign-media").upload(path, file, { cacheControl: "3600", upsert: false });
+      if (error) throw error;
+      const { data } = supabase.storage.from("campaign-media").getPublicUrl(path);
+      setEditing((prev: any) => ({ ...prev, media_url: data.publicUrl }));
+      toast.success("Imagem anexada!");
+    } catch (e: any) {
+      toast.error(e?.message || "Falha ao enviar imagem.");
+    } finally {
+      setUploading(false);
+    }
+  }
 
   async function refresh() {
     setLoading(true);
@@ -88,6 +109,7 @@ function CampanhasPage() {
         id: editing.id,
         nome: editing.nome.trim(),
         mensagem: editing.mensagem,
+        media_url: editing.media_url || null,
         agendado_para: editing.agendado_para || null,
         filtro_tags: editing.filtro_tags ?? [],
         intervalo_min_seg: Number(editing.intervalo_min_seg) || 5,
@@ -203,6 +225,27 @@ function CampanhasPage() {
                 <Label>Mensagem</Label>
                 <Textarea rows={5} value={editing.mensagem} onChange={(e) => setEditing({ ...editing, mensagem: e.target.value })} placeholder="Olá {{nome}}, temos uma oferta..." />
                 <p className="text-xs text-muted-foreground mt-1">Use <code>{"{{nome}}"}</code> para personalizar com o nome do contato.</p>
+              </div>
+              <div>
+                <Label>Foto (opcional)</Label>
+                {editing.media_url ? (
+                  <div className="mt-1 flex items-center gap-3">
+                    <img src={editing.media_url} alt="Prévia da imagem" className="size-20 rounded-lg object-cover border border-border" />
+                    <Button type="button" variant="outline" size="sm" onClick={() => setEditing({ ...editing, media_url: null })}>
+                      <X className="size-4 mr-1" /> Remover
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="mt-1">
+                    <label className={`inline-flex items-center gap-2 text-sm px-3 py-2 rounded-lg border border-input ${uploading ? "opacity-60" : "cursor-pointer hover:bg-muted"}`}>
+                      {uploading ? <Loader2 className="size-4 animate-spin" /> : <ImagePlus className="size-4" />}
+                      {uploading ? "Enviando..." : "Anexar imagem"}
+                      <input type="file" accept="image/*" className="hidden" disabled={uploading}
+                        onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleFile(f); e.target.value = ""; }} />
+                    </label>
+                    <p className="text-xs text-muted-foreground mt-1">A imagem é enviada junto com a mensagem (a mensagem vira a legenda da foto).</p>
+                  </div>
+                )}
               </div>
               <div>
                 <Label>Filtrar por tags do CRM</Label>
