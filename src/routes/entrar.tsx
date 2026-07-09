@@ -259,7 +259,7 @@ function EntrarPage() {
                       id="email"
                       type="email"
                       value={email}
-                      onChange={(e) => { setEmail(e.target.value); if (needsPassword) setNeedsPassword(false); }}
+                      onChange={(e) => setEmail(e.target.value)}
                       required
                       autoFocus
                       placeholder="voce@empresa.com"
@@ -294,6 +294,28 @@ function EntrarPage() {
                       Sem cartão para começar os <span className="font-semibold text-foreground">3 dias grátis</span>. Cancele quando quiser.
                     </p>
                   )}
+
+                  <div className="text-center pt-2 border-t border-[color:var(--hairline)] mt-2">
+                    {needsPassword ? (
+                      <button
+                        type="button"
+                        onClick={() => setNeedsPassword(false)}
+                        className="text-[12.5px] text-muted-foreground hover:text-foreground transition-colors pt-2"
+                      >
+                        Não tem conta?{" "}
+                        <span className="font-semibold text-[color:var(--brand-text)]">Criar agora</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setNeedsPassword(true)}
+                        className="text-[12.5px] text-muted-foreground hover:text-foreground transition-colors pt-2"
+                      >
+                        Já tem conta?{" "}
+                        <span className="font-semibold text-[color:var(--brand-text)]">Entrar</span>
+                      </button>
+                    )}
+                  </div>
                 </form>
               </div>
             </div>
