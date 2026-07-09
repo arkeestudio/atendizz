@@ -28,6 +28,10 @@ dist-ssr
 # Schema concatenado gerado localmente (a fonte de verdade é supabase/migrations/)
 dev-schema.sql
 
+# Settings locais do Claude Code (allowlist pode conter paths/chaves de teste)
+.claude/settings.json
+.claude/settings.local.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
