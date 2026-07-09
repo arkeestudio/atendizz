@@ -130,7 +130,7 @@ Analise e devolva o JSON.`;
         { role: "system", content: system },
         { role: "user", content: user },
       ],
-      { provider: "gemini", model: "google/gemini-2.5-flash" },
+      { provider: "gemini", model: "google/gemini-2.5-flash-lite" },
     );
 
     const parsed = extractJson(raw);
@@ -220,7 +220,7 @@ Gere o JSON do agente.`;
         { role: "system", content: system },
         { role: "user", content: user },
       ],
-      { provider: "gemini", model: "google/gemini-2.5-flash" },
+      { provider: "gemini", model: "google/gemini-2.5-flash-lite" },
     );
 
     const parsed = extractJson(raw) as Partial<GeneratedAgentConfig>;

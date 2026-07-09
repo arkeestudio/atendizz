@@ -1,5 +1,7 @@
-// Multi-provider AI chat. Gemini default via Lovable Gateway (free for users).
-// OpenAI e Anthropic usam a chave da própria empresa.
+// Multi-provider AI chat.
+// Gemini (Google): usa GEMINI_API_KEY (chave própria) chamando o Google direto;
+//   se não houver, cai no gateway do Lovable (só existe no ambiente Lovable).
+// OpenAI e Anthropic usam a chave da própria empresa (agent_config).
 
 export interface ChatMsg {
   role: "system" | "user" | "assistant";
@@ -11,13 +13,14 @@ export interface AiProviderConfig {
   model?: string;
   openaiKey?: string;
   anthropicKey?: string;
+  geminiKey?: string;
 }
 
 const GATEWAY = "https://ai.gateway.lovable.dev/v1/chat/completions";
 
 export async function lovableAiChat(
   messages: ChatMsg[],
-  modelOrConfig: string | AiProviderConfig = "google/gemini-2.5-flash",
+  modelOrConfig: string | AiProviderConfig = "google/gemini-2.5-flash-lite",
 ): Promise<string> {
   const cfg: AiProviderConfig =
     typeof modelOrConfig === "string"
@@ -37,10 +40,21 @@ export async function lovableAiChat(
     const model = cfg.model || "claude-3-5-sonnet-latest";
     return anthropicChat(key, model, messages);
   }
-  // default: Gemini via Lovable Gateway
+  // default: Gemini (Google). Prioriza SUA chave direta; só cai no gateway do Lovable se não houver.
+  const googleKey = cfg.geminiKey?.trim() || process.env.GEMINI_API_KEY?.trim();
+  if (googleKey) {
+    const gModel = (cfg.model || "gemini-2.5-flash-lite").replace(/^google\//, "");
+    return geminiChat(googleKey, gModel, messages);
+  }
+
+  // fallback: Gemini via Lovable Gateway
   const key = process.env.LOVABLE_API_KEY;
-  if (!key) throw new Error("LOVABLE_API_KEY ausente.");
-  const model = cfg.model || "google/gemini-2.5-flash";
+  if (!key) {
+    throw new Error(
+      "IA do Google não configurada: defina GEMINI_API_KEY (sua chave do Google AI Studio) no ambiente.",
+    );
+  }
+  const model = cfg.model || "google/gemini-2.5-flash-lite";
   const res = await fetch(GATEWAY, {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
@@ -92,6 +106,39 @@ async function anthropicChat(key: string, model: string, messages: ChatMsg[]): P
   const txt = (data?.content || [])
     .filter((p: any) => p?.type === "text")
     .map((p: any) => p.text)
+    .join("\n")
+    .trim();
+  return txt;
+}
+
+async function geminiChat(key: string, model: string, messages: ChatMsg[]): Promise<string> {
+  // Google Generative Language API (Gemini) — chamada direta com a chave do usuário.
+  const system = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
+  const contents = messages
+    .filter((m) => m.role !== "system")
+    .map((m) => ({
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: m.content }],
+    }));
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+      body: JSON.stringify({
+        ...(system ? { system_instruction: { parts: [{ text: system }] } } : {}),
+        contents,
+      }),
+    },
+  );
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`Google Gemini: ${res.status} ${t.slice(0, 200)}`);
+  }
+  const data = await res.json();
+  const txt = (data?.candidates?.[0]?.content?.parts || [])
+    .map((p: any) => p?.text)
+    .filter(Boolean)
     .join("\n")
     .trim();
   return txt;

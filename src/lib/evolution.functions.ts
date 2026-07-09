@@ -291,7 +291,7 @@ export const testAiReply = createServerFn({ method: "POST" })
     const { allowsProvider, PLAN_LABEL } = await import("./plan-features");
     const plan = await getCompanyPlan(companyId);
     let provider = ((cfg as any)?.ai_provider || "gemini") as string;
-    let model = ((cfg as any)?.ai_model || "google/gemini-2.5-flash") as string;
+    let model = ((cfg as any)?.ai_model || "google/gemini-2.5-flash-lite") as string;
     if (!allowsProvider(plan.slug, provider)) {
       throw new Error(
         `O provedor ${provider.toUpperCase()} não está incluso no plano ${PLAN_LABEL[plan.slug]}. Faça upgrade para Pro para usar GPT/Claude.`,
