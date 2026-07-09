@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/arley/.claude/projects/c--PROJETOS-AtendeZap/memory/**)",
+      "Bash(git commit *)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\arley\\.claude\\projects\\c--PROJETOS-AtendeZap\\memory"
+    ]
+  }
+}
