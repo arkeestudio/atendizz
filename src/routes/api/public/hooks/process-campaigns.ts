@@ -29,9 +29,9 @@ export const Route = createFileRoute("/api/public/hooks/process-campaigns")({
           const processed: any[] = [];
           for (const c of (due ?? []) as any[]) {
             // Carrega instância WhatsApp da empresa
-            const { data: inst } = await (supabaseAdmin as any)
+            const { data: inst } = await supabaseAdmin
               .from("whatsapp_instances")
-              .select("instance_name, status, aquecimento_ativo, aquecimento_limite_dia")
+              .select("instance_name, status")
               .eq("company_id", c.company_id)
               .maybeSingle();
             if (!inst || (inst.status !== "open" && inst.status !== "connected")) {
@@ -42,9 +42,14 @@ export const Route = createFileRoute("/api/public/hooks/process-campaigns")({
             // Quantos enviar agora (cap por execução)
             let batchSize = 5;
 
-            // Modo aquecimento: respeita o limite de envios nas últimas 24h.
-            if (inst.aquecimento_ativo) {
-              const limiteDia = inst.aquecimento_limite_dia ?? 50;
+            // Modo aquecimento (colunas podem não existir ainda -> degrada sem quebrar o envio).
+            const { data: warm } = await (supabaseAdmin as any)
+              .from("whatsapp_instances")
+              .select("aquecimento_ativo, aquecimento_limite_dia")
+              .eq("company_id", c.company_id)
+              .maybeSingle();
+            if (warm?.aquecimento_ativo) {
+              const limiteDia = warm.aquecimento_limite_dia ?? 50;
               const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
               const { count: enviados24h } = await supabaseAdmin
                 .from("campaign_target")
