@@ -70,6 +70,46 @@ export async function lovableAiChat(
   return data?.choices?.[0]?.message?.content?.toString().trim() || "";
 }
 
+export async function geminiTranscribeAudio(base64: string, mimetype?: string): Promise<string> {
+  // Transcreve uma nota de voz do WhatsApp usando o Gemini (multimodal).
+  const key = process.env.GEMINI_API_KEY?.trim();
+  if (!key || !base64) return "";
+  const mime = (mimetype || "audio/ogg").split(";")[0].trim() || "audio/ogg";
+  const model = "gemini-2.5-flash";
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                { text: "Transcreva este áudio em português do Brasil. Responda APENAS com o texto falado, sem comentários nem aspas." },
+                { inline_data: { mime_type: mime, data: base64 } },
+              ],
+            },
+          ],
+        }),
+      },
+    );
+    if (!res.ok) {
+      console.warn("[gemini.transcribe]", res.status, (await res.text().catch(() => "")).slice(0, 200));
+      return "";
+    }
+    const data = await res.json();
+    return (data?.candidates?.[0]?.content?.parts || [])
+      .map((p: any) => p?.text)
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+  } catch (e: any) {
+    console.warn("[gemini.transcribe]", e?.message);
+    return "";
+  }
+}
+
 async function openAiChat(key: string, model: string, messages: ChatMsg[]): Promise<string> {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",

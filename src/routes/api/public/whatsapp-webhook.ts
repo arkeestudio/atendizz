@@ -16,11 +16,41 @@ export const Route = createFileRoute("/api/public/whatsapp-webhook")({
             payload?.instance || payload?.instanceName || payload?.data?.instance;
 
           if (!instanceName) return new Response("ok", { status: 200 });
-          if (event && event !== "messages.upsert" && event !== "MESSAGES_UPSERT") {
+
+          const data = payload?.data ?? payload;
+          const evNorm = String(event || "").toLowerCase().replace(/_/g, ".");
+          const suppliedToken = new URL(request.url).searchParams.get("t") || request.headers.get("x-webhook-token") || "";
+
+          // Evento de conexão: mantém o status do número atualizado em tempo real.
+          if (evNorm === "connection.update") {
+            try {
+              const { data: ci } = await (supabaseAdmin as any)
+                .from("whatsapp_instances")
+                .select("status, webhook_token")
+                .eq("instance_name", instanceName)
+                .maybeSingle();
+              if (ci && suppliedToken && suppliedToken === ci.webhook_token) {
+                const st = data?.state || data?.connection || "";
+                const newStatus = st === "open" ? "connected" : st === "connecting" ? "connecting" : st === "close" ? "disconnected" : null;
+                if (newStatus && newStatus !== ci.status) {
+                  await (supabaseAdmin as any).from("whatsapp_instances").update({ status: newStatus }).eq("instance_name", instanceName);
+                }
+              }
+            } catch (e: any) { console.error("[connection.update]", e?.message); }
+            return new Response("connection", { status: 200 });
+          }
+
+          // Atualização de mensagem: status de entrega/leitura (✓✓).
+          if (evNorm === "messages.update") {
+            try { await handleMessageAck(supabaseAdmin, instanceName, suppliedToken, data); }
+            catch (e: any) { console.error("[messages.update]", e?.message); }
+            return new Response("ack", { status: 200 });
+          }
+
+          if (event && evNorm !== "messages.upsert") {
             return new Response("ignored", { status: 200 });
           }
 
-          const data = payload?.data ?? payload;
           const key = data?.key ?? {};
           const fromMe: boolean = !!key.fromMe;
           const whatsappMessageId: string | null = typeof key.id === "string" && key.id.trim() ? key.id.trim() : null;
@@ -32,15 +62,15 @@ export const Route = createFileRoute("/api/public/whatsapp-webhook")({
           const number = remoteJid.split("@")[0];
           const pushName: string | undefined = data?.pushName;
           const msg = data?.message ?? {};
-          const text: string =
+          let text: string =
             msg.conversation ||
             msg.extendedTextMessage?.text ||
             msg.imageMessage?.caption ||
             msg.videoMessage?.caption ||
             "";
-          if (!text || !text.trim()) return new Response("no text", { status: 200 });
+          const audioMsg = msg.audioMessage;
+          if ((!text || !text.trim()) && !audioMsg) return new Response("no text", { status: 200 });
 
-          const suppliedToken = new URL(request.url).searchParams.get("t") || request.headers.get("x-webhook-token") || "";
           const { data: inst } = await (supabaseAdmin as any)
             .from("whatsapp_instances")
             .select("company_id, user_id, instance_name, webhook_token")
@@ -52,6 +82,20 @@ export const Route = createFileRoute("/api/public/whatsapp-webhook")({
           }
           const companyId = (inst as any).company_id as string;
           const userId = (inst as any).user_id as string;
+
+          // Nota de voz -> transcreve com Gemini para a IA entender e responder.
+          if ((!text || !text.trim()) && audioMsg) {
+            try {
+              const { evoGetMediaBase64 } = await import("@/lib/evolution.server");
+              const media = await evoGetMediaBase64(instanceName, { key, message: msg });
+              if (media?.base64) {
+                const { geminiTranscribeAudio } = await import("@/lib/lovable-ai.server");
+                const transcript = await geminiTranscribeAudio(media.base64, media.mimetype);
+                if (transcript) text = transcript;
+              }
+            } catch (e: any) { console.error("[audio transcribe]", e?.message); }
+            if (!text || !text.trim()) return new Response("no audio text", { status: 200 });
+          }
 
           if (whatsappMessageId) {
             const { data: duplicate } = await (supabaseAdmin as any)
@@ -361,7 +405,7 @@ export const Route = createFileRoute("/api/public/whatsapp-webhook")({
               const typingMs = Math.min(3000, 1200 + Math.floor(part.length * 35));
               await evoSendPresence(instanceName, number, "composing", typingMs);
               await new Promise((r) => setTimeout(r, typingMs));
-              await evoSendText(instanceName, number, part);
+              const sent: any = await evoSendText(instanceName, number, part);
               await supabaseAdmin.from("mensagens").insert({
                 company_id: companyId,
                 user_id: userId,
@@ -370,7 +414,9 @@ export const Route = createFileRoute("/api/public/whatsapp-webhook")({
                 direcao: "saida",
                 autor: "ia",
                 texto: part,
-              });
+                whatsapp_message_id: sent?.key?.id ?? null,
+                status_entrega: "enviado",
+              } as any);
               if (i < finalParts.length - 1) {
                 await new Promise((r) => setTimeout(r, 700 + Math.floor(Math.random() * 800)));
               }
@@ -406,6 +452,43 @@ const OPT_OUT_WORDS = ["parar", "pare", "cancelar", "sair", "remover", "descadas
 function isOptOutMessage(text: string) {
   const normalized = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
   return OPT_OUT_WORDS.some((word) => normalized === word || normalized.includes(` ${word} `));
+}
+
+function mapAckStatus(s: any): string | null {
+  if (s == null) return null;
+  const v = String(s).toUpperCase();
+  if (v === "READ" || v === "PLAYED" || v === "4" || v === "5") return "lido";
+  if (v === "DELIVERY_ACK" || v === "DELIVERED" || v === "3") return "entregue";
+  if (v === "SERVER_ACK" || v === "SENT" || v === "2") return "enviado";
+  if (v === "ERROR" || v === "0") return "falhou";
+  return null;
+}
+
+async function handleMessageAck(admin: any, instanceName: string, suppliedToken: string, data: any) {
+  const { data: inst } = await admin
+    .from("whatsapp_instances")
+    .select("company_id, webhook_token")
+    .eq("instance_name", instanceName)
+    .maybeSingle();
+  if (!inst || !suppliedToken || suppliedToken !== inst.webhook_token) return;
+  const rank: Record<string, number> = { falhou: 0, enviado: 1, entregue: 2, lido: 3 };
+  const items = Array.isArray(data) ? data : [data];
+  for (const it of items) {
+    const wid = it?.key?.id || it?.keyId || it?.messageId || it?.id;
+    const raw = it?.update?.status ?? it?.status ?? it?.update?.receipt?.type;
+    const mapped = mapAckStatus(raw);
+    if (!wid || !mapped) continue;
+    const { data: row } = await admin
+      .from("mensagens")
+      .select("id, status_entrega")
+      .eq("company_id", inst.company_id)
+      .eq("whatsapp_message_id", wid)
+      .maybeSingle();
+    if (!row) continue;
+    // nunca "rebaixa" (lido > entregue > enviado)
+    if ((rank[mapped] ?? 0) < (rank[row.status_entrega as string] ?? -1)) continue;
+    await admin.from("mensagens").update({ status_entrega: mapped }).eq("id", row.id);
+  }
 }
 
 function sanitizeAiParts(parts: string[]) {

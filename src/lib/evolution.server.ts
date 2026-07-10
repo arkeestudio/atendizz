@@ -140,7 +140,7 @@ export async function evoSetWebhook(instanceName: string, webhookUrl: string) {
         url: webhookUrl,
         byEvents: false,
         base64: false,
-        events: ["MESSAGES_UPSERT"],
+        events: ["MESSAGES_UPSERT", "MESSAGES_UPDATE", "CONNECTION_UPDATE"],
       },
     },
   });
@@ -176,6 +176,26 @@ export async function evoSendMedia(
       fileName,
     },
   });
+}
+
+export async function evoGetMediaBase64(
+  instanceName: string,
+  messageObj: any,
+): Promise<{ base64: string; mimetype?: string } | null> {
+  // Evolution v2: POST /chat/getBase64FromMediaMessage/{instance}
+  // messageObj = { key, message } vindo do webhook (messages.upsert).
+  try {
+    const resp: any = await evo(`/chat/getBase64FromMediaMessage/${encodeURIComponent(instanceName)}`, {
+      method: "POST",
+      json: { message: messageObj, convertToMp4: false },
+    });
+    const base64 = resp?.base64 || resp?.media || resp?.data?.base64 || null;
+    if (!base64) return null;
+    return { base64, mimetype: resp?.mimetype || resp?.mimeType || resp?.data?.mimetype };
+  } catch (e) {
+    console.warn("[evolution.getBase64]", e);
+    return null;
+  }
 }
 
 export async function evoSendPresence(instanceName: string, number: string, presence: "composing" | "paused" | "available", delayMs = 1500) {

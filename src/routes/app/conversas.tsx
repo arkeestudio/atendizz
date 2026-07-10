@@ -24,6 +24,7 @@ interface Msg {
   id: string; numero: string; contato_nome: string | null;
   direcao: "entrada" | "saida"; autor: "ia" | "humano" | "contato";
   texto: string; created_at: string; user_id: string | null;
+  status_entrega?: string | null;
 }
 
 type Filter = "todas" | "nao_lidas" | "minhas" | "ia_ativa" | "resolvidas";
@@ -512,10 +513,18 @@ function Bubble({ m }: { m: Msg }) {
           </span>
         )}
         <div className="whitespace-pre-wrap break-words">{m.texto}</div>
-        <div className={`text-[10.5px] mt-1 ${isOut ? "opacity-70" : "text-muted-foreground"}`}>
+        <div className={`text-[10.5px] mt-1 flex items-center gap-1 ${isOut ? "opacity-80 justify-end" : "text-muted-foreground"}`}>
           {new Date(m.created_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+          {isOut && m.status_entrega && <DeliveryTick status={m.status_entrega} />}
         </div>
       </div>
     </div>
   );
+}
+
+function DeliveryTick({ status }: { status: string }) {
+  if (status === "falhou") return <span title="Falha no envio" className="text-red-200">⚠</span>;
+  if (status === "lido") return <span title="Lido" className="text-sky-200 font-semibold">✓✓</span>;
+  if (status === "entregue") return <span title="Entregue">✓✓</span>;
+  return <span title="Enviado">✓</span>;
 }
