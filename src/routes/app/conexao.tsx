@@ -5,10 +5,13 @@ import { useServerFn } from "@tanstack/react-start";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
-import { Loader2, RefreshCw, Power, QrCode } from "lucide-react";
+import { Loader2, RefreshCw, Power, QrCode, Flame } from "lucide-react";
 import { brand } from "@/config/brand";
-import { connectWhatsapp, checkWhatsappStatus, disconnectWhatsapp } from "@/lib/evolution.functions";
+import { connectWhatsapp, checkWhatsappStatus, disconnectWhatsapp, getWhatsappSettings, setWhatsappWarmup } from "@/lib/evolution.functions";
 import { usePlanFeatures } from "@/hooks/use-plan-features";
 import { PlanUsageBadge } from "@/components/plan-usage-badge";
 
@@ -21,18 +24,37 @@ function ConexaoPage() {
   const connect = useServerFn(connectWhatsapp);
   const check = useServerFn(checkWhatsappStatus);
   const disconnect = useServerFn(disconnectWhatsapp);
+  const getSettings = useServerFn(getWhatsappSettings);
+  const saveWarmup = useServerFn(setWhatsappWarmup);
   const plan = usePlanFeatures();
 
   const [loading, setLoading] = useState(false);
   const [qr, setQr] = useState<string | null>(null);
   const [status, setStatus] = useState<string>("disconnected");
   const [numero, setNumero] = useState<string | null>(null);
+  const [warmup, setWarmup] = useState<{ ativo: boolean; limite: number }>({ ativo: false, limite: 50 });
+  const [savingWarmup, setSavingWarmup] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     void doCheck();
+    void getSettings()
+      .then((s: any) => setWarmup({ ativo: !!s.aquecimento_ativo, limite: s.aquecimento_limite_dia ?? 50 }))
+      .catch(() => {});
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
+
+  async function handleSaveWarmup() {
+    setSavingWarmup(true);
+    try {
+      await saveWarmup({ data: { ativo: warmup.ativo, limite: warmup.limite } });
+      toast.success("Configuração de aquecimento salva!");
+    } catch (e: any) {
+      toast.error(e?.message || "Erro ao salvar aquecimento");
+    } finally {
+      setSavingWarmup(false);
+    }
+  }
 
   function startPolling() {
     if (pollRef.current) clearInterval(pollRef.current);
@@ -144,6 +166,35 @@ function ConexaoPage() {
         ) : (
           <div className="text-sm text-muted-foreground">Clique em <b>Conectar WhatsApp</b> para gerar o QR Code.</div>
         )}
+      </Card>
+
+      <Card className="p-6">
+        <div className="flex items-start gap-3">
+          <Flame className="size-5 text-orange-500 shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="font-semibold flex items-center gap-2">
+                  Modo aquecimento
+                  <HelpTip text="Limita quantas mensagens de campanha este número dispara por dia (últimas 24h). Essencial para números novos: reduz o risco de bloqueio pela Meta. Comece baixo e aumente aos poucos conforme o número 'esquenta'." />
+                </h2>
+                <p className="text-sm text-muted-foreground">Protege números novos limitando os envios diários de campanha.</p>
+              </div>
+              <Switch checked={warmup.ativo} onCheckedChange={(v) => setWarmup((w) => ({ ...w, ativo: v }))} />
+            </div>
+            {warmup.ativo && (
+              <div className="mt-4">
+                <Label>Limite de envios por dia</Label>
+                <Input type="number" min={1} max={1000} value={warmup.limite} className="w-32 mt-1"
+                  onChange={(e) => setWarmup((w) => ({ ...w, limite: Number(e.target.value) }))} />
+                <p className="text-xs text-muted-foreground mt-1">Sugestão: número novo comece com ~20-30/dia e vá subindo.</p>
+              </div>
+            )}
+            <Button size="sm" className="mt-4" disabled={savingWarmup} onClick={handleSaveWarmup}>
+              {savingWarmup ? <Loader2 className="size-4 mr-1.5 animate-spin" /> : null} Salvar
+            </Button>
+          </div>
+        </div>
       </Card>
     </div>
   );

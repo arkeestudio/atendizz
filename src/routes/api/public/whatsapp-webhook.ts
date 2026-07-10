@@ -136,6 +136,18 @@ export const Route = createFileRoute("/api/public/whatsapp-webhook")({
             await supabaseAdmin
               .from("contact_pause")
               .upsert({ company_id: companyId, user_id: userId, numero: number, pausado: true }, { onConflict: "company_id,numero" });
+            // Opt-out de campanhas: nunca mais envia disparo em massa pra esse número.
+            await (supabaseAdmin as any)
+              .from("campaign_optout")
+              .upsert({ company_id: companyId, numero: number }, { onConflict: "company_id,numero" });
+            try {
+              const confirmacao = "Pronto! Você não vai mais receber mensagens de campanhas. Se mudar de ideia, é só nos chamar. 👍";
+              await evoSendText(instanceName, number, confirmacao);
+              await supabaseAdmin.from("mensagens").insert({
+                company_id: companyId, user_id: userId, numero: number,
+                contato_nome: pushName ?? null, direcao: "saida", autor: "sistema", texto: confirmacao,
+              });
+            } catch (e: any) { console.error("[opt-out confirm]", e?.message); }
             await upsertCard(supabaseAdmin, companyId, userId, number, pushName, text, stages);
             return new Response("opt-out", { status: 200 });
           }

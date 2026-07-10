@@ -14,7 +14,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Loader2, Plus, Play, Pause, Trash2, X, Megaphone, Users, ImagePlus } from "lucide-react";
+import { Loader2, Plus, Play, Pause, Trash2, X, Megaphone, Users, ImagePlus, AlertTriangle } from "lucide-react";
 import { brand } from "@/config/brand";
 import { supabase } from "@/integrations/supabase/client";
 
@@ -162,6 +162,9 @@ function CampanhasPage() {
         <div className="grid gap-3">
           {rows.map((c) => {
             const pct = c.total_destinatarios ? Math.round((c.total_enviados / c.total_destinatarios) * 100) : 0;
+            const tentado = (c.total_enviados || 0) + (c.total_falhas || 0);
+            const failRate = tentado > 0 ? (c.total_falhas || 0) / tentado : 0;
+            const emRisco = (c.total_falhas || 0) >= 3 && failRate >= 0.2;
             return (
               <Card key={c.id} className="p-4">
                 <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -179,6 +182,12 @@ function CampanhasPage() {
                       {c.total_falhas > 0 && <span className="text-red-600">{c.total_falhas} falhas</span>}
                       {c.agendado_para && <span>Agendada: {new Date(c.agendado_para).toLocaleString()}</span>}
                     </div>
+                    {emRisco && (
+                      <div className="mt-2 text-xs text-red-600 flex items-start gap-1.5 bg-red-500/10 rounded px-2 py-1.5">
+                        <AlertTriangle className="size-3.5 mt-0.5 shrink-0" />
+                        <span>Taxa de falha alta ({Math.round(failRate * 100)}%). Seu número pode estar em risco de bloqueio — considere pausar e reduzir o volume (ative o <b>Modo aquecimento</b> em Conexão).</span>
+                      </div>
+                    )}
                     {c.status === "enviando" || c.status === "pausada" ? (
                       <div className="h-1.5 bg-muted rounded mt-2 overflow-hidden">
                         <div className="h-full bg-primary" style={{ width: `${pct}%` }} />

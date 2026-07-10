@@ -29,9 +29,9 @@ export const Route = createFileRoute("/api/public/hooks/process-campaigns")({
           const processed: any[] = [];
           for (const c of (due ?? []) as any[]) {
             // Carrega instância WhatsApp da empresa
-            const { data: inst } = await supabaseAdmin
+            const { data: inst } = await (supabaseAdmin as any)
               .from("whatsapp_instances")
-              .select("instance_name, status")
+              .select("instance_name, status, aquecimento_ativo, aquecimento_limite_dia")
               .eq("company_id", c.company_id)
               .maybeSingle();
             if (!inst || (inst.status !== "open" && inst.status !== "connected")) {
@@ -40,7 +40,29 @@ export const Route = createFileRoute("/api/public/hooks/process-campaigns")({
             }
 
             // Quantos enviar agora (cap por execução)
-            const batchSize = 5;
+            let batchSize = 5;
+
+            // Modo aquecimento: respeita o limite de envios nas últimas 24h.
+            if (inst.aquecimento_ativo) {
+              const limiteDia = inst.aquecimento_limite_dia ?? 50;
+              const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+              const { count: enviados24h } = await supabaseAdmin
+                .from("campaign_target")
+                .select("id", { count: "exact", head: true })
+                .eq("company_id", c.company_id)
+                .eq("status", "enviado")
+                .gte("enviado_em", since);
+              const restante = limiteDia - (enviados24h ?? 0);
+              if (restante <= 0) {
+                // Bateu o limite do dia: adia a campanha e não envia mais agora.
+                await supabaseAdmin.from("campaign").update({
+                  proximo_envio_em: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+                }).eq("id", c.id);
+                processed.push({ id: c.id, skipped: "aquecimento_limite", enviados24h });
+                continue;
+              }
+              batchSize = Math.min(batchSize, restante);
+            }
             const { data: pending } = await supabaseAdmin
               .from("campaign_target")
               .select("id, contato_numero, contato_nome")

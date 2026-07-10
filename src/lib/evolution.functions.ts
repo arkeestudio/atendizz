@@ -265,6 +265,37 @@ export const setContactIaActive = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+export const getWhatsappSettings = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { supabase, userId } = context;
+    const companyId = await resolveCompanyId(supabase, userId);
+    const { data } = await (supabase as any)
+      .from("whatsapp_instances")
+      .select("aquecimento_ativo, aquecimento_limite_dia")
+      .eq("company_id", companyId)
+      .maybeSingle();
+    return {
+      aquecimento_ativo: data?.aquecimento_ativo ?? false,
+      aquecimento_limite_dia: data?.aquecimento_limite_dia ?? 50,
+    };
+  });
+
+export const setWhatsappWarmup = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: { ativo: boolean; limite: number }) => d)
+  .handler(async ({ context, data }) => {
+    const { supabase, userId } = context;
+    const companyId = await resolveCompanyId(supabase, userId);
+    const limite = Math.max(1, Math.min(1000, Math.floor(Number(data.limite) || 50)));
+    const { error } = await (supabase as any)
+      .from("whatsapp_instances")
+      .update({ aquecimento_ativo: !!data.ativo, aquecimento_limite_dia: limite })
+      .eq("company_id", companyId);
+    if (error) throw new Error(error.message);
+    return { ok: true, aquecimento_ativo: !!data.ativo, aquecimento_limite_dia: limite };
+  });
+
 export const testAiReply = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d: { message: string }) => d)

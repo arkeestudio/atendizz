@@ -75,6 +75,12 @@ export const previewAudience = createServerFn({ method: "POST" })
       if (!num) continue;
       if (!map.has(num)) map.set(num, { numero: num, nome: r.contato_nome ?? null });
     }
+    // Desconta quem pediu opt-out ("SAIR")
+    const { data: optRows } = await (supabase as any)
+      .from("campaign_optout").select("numero").eq("company_id", companyId);
+    for (const o of (optRows ?? []) as any[]) {
+      map.delete(String(o.numero || "").replace(/\D/g, ""));
+    }
     return { total: map.size, sample: Array.from(map.values()).slice(0, 10) };
   });
 
@@ -151,7 +157,13 @@ export const startCampaign = createServerFn({ method: "POST" })
       if (!num) continue;
       if (!map.has(num)) map.set(num, r.contato_nome ?? null);
     }
-    if (map.size === 0) throw new Error("Nenhum contato bate com os filtros.");
+    // Respeita opt-out: remove quem respondeu "SAIR" (não recebe campanhas)
+    const { data: optRows } = await (supabase as any)
+      .from("campaign_optout").select("numero").eq("company_id", companyId);
+    for (const o of (optRows ?? []) as any[]) {
+      map.delete(String(o.numero || "").replace(/\D/g, ""));
+    }
+    if (map.size === 0) throw new Error("Nenhum contato válido (todos os filtrados pediram para sair ou não há contatos).");
 
     // Reset existing targets
     await supabase.from("campaign_target").delete().eq("campaign_id", c.id);
