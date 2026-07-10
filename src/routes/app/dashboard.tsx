@@ -48,6 +48,8 @@ function Dashboard() {
   const [paradas, setParadas] = useState<{ numero: string; nome: string | null; min: number }[]>([]);
   const [followups, setFollowups] = useState<{ id: string; nome: string | null; numero: string; when: string }[]>([]);
   const [novos, setNovos] = useState<number>(0);
+  const [iaCreditos, setIaCreditos] = useState<number | null>(null);
+  const [iaModelo, setIaModelo] = useState<string>("Gemini 2.5 Flash");
 
   const range = useMemo(() => periodRange(period, from, to), [period, from, to]);
 
@@ -56,16 +58,20 @@ function Dashboard() {
   async function load(cid: string, r: { start: Date; end: Date; days: number }) {
     const startISO = r.start.toISOString();
     const endISO = r.end.toISOString();
-    const [{ data: inst }, { data: cards }, { data: stages }, { data: msgs }, { data: last }, { data: cardsNew }] = await Promise.all([
+    const [{ data: inst }, { data: cards }, { data: stages }, { data: msgs }, { data: last }, { data: cardsNew }, { data: comp }, { data: agentCfg }] = await Promise.all([
       supabase.from("whatsapp_instances").select("status").eq("company_id", cid).maybeSingle(),
       supabase.from("crm_cards").select("status,stage_id,valor,ultima_em,nome,numero").eq("company_id", cid),
       supabase.from("crm_stage").select("id,tipo").eq("company_id", cid),
       supabase.from("mensagens").select("direcao,autor,created_at,numero,contato_nome").eq("company_id", cid).gte("created_at", startISO).lte("created_at", endISO),
       supabase.from("mensagens").select("id,numero,contato_nome,direcao,autor,texto,created_at").eq("company_id", cid).order("created_at", { ascending: false }).limit(8),
       supabase.from("crm_cards").select("id").eq("company_id", cid).gte("ultima_em", startISO),
+      (supabase as any).from("company").select("creditos_saldo").eq("id", cid).maybeSingle(),
+      (supabase as any).from("agent_config").select("ai_model").eq("company_id", cid).maybeSingle(),
     ]);
 
     setStatus(((inst?.status as any) || "disconnected"));
+    setIaCreditos(typeof (comp as any)?.creditos_saldo === "number" ? (comp as any).creditos_saldo : null);
+    setIaModelo(prettyModel((agentCfg as any)?.ai_model));
 
     const stageMap = new Map((stages ?? []).map((s: any) => [s.id, s.tipo as string]));
     const s: Stats = { conversas: 0, negociando: 0, ganho: 0, perda: 0, respondidasIa: 0, recebidas: 0, receita: 0 };
@@ -158,6 +164,17 @@ function Dashboard() {
         <KpiCard icon={<DollarSign className="size-4" />} label="Receita (ganhos)" value={`R$ ${stats.receita.toLocaleString("pt-BR", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`} trend={`${stats.ganho} ganhos`} />
       </div>
 
+      <div className="rounded-2xl border border-[color:var(--hairline)] bg-[color:var(--panel)] p-4 flex flex-wrap items-center gap-x-8 gap-y-3">
+        <div className="flex items-center gap-2">
+          <Bot className="size-4 text-[color:var(--brand)]" />
+          <h3 className="font-display text-[15px] font-semibold flex items-center gap-1.5">Uso da IA <HelpTip text="A IA responde usando a sua chave do Google Gemini. Cada resposta consome 1 crédito interno. Sua cota REAL de uso é a da sua conta Google (limites de requisições do Gemini)." /></h3>
+        </div>
+        <IaStat label="Modelo" value={iaModelo} />
+        <IaStat label={`Respostas (${labelPeriod(period, range)})`} value={String(stats.respondidasIa)} />
+        <IaStat label="Créditos restantes" value={iaCreditos == null ? "—" : iaCreditos >= 1_000_000 ? "Ilimitado" : iaCreditos.toLocaleString("pt-BR")} />
+        <p className="text-[11.5px] text-muted-foreground ml-auto max-w-[280px]">Cada resposta consome 1 crédito interno. Sua cota real de uso é a do Google Gemini (na sua conta Google).</p>
+      </div>
+
       <div className="grid lg:grid-cols-[1.6fr_1fr] gap-5">
         <div className="rounded-2xl border border-[color:var(--hairline)] bg-[color:var(--panel)] p-6">
           <div className="flex items-center justify-between mb-1">
@@ -180,6 +197,26 @@ function Dashboard() {
         </div>
         <MessageTimeline items={timeline} empty="Conecte o WhatsApp para começar a ver conversas." />
       </div>
+    </div>
+  );
+}
+
+function prettyModel(m?: string | null): string {
+  if (!m) return "Gemini 2.5 Flash";
+  const s = String(m).replace(/^(google|openai|anthropic)\//, "");
+  if (s.includes("flash-lite")) return "Gemini 2.5 Flash Lite";
+  if (s.includes("2.5-flash")) return "Gemini 2.5 Flash";
+  if (s.includes("gemini")) return "Gemini";
+  if (s.includes("gpt")) return s.toUpperCase();
+  if (s.includes("claude")) return "Claude";
+  return s;
+}
+
+function IaStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="text-[10.5px] uppercase tracking-wider text-muted-foreground">{label}</div>
+      <div className="text-[15px] font-bold mt-0.5">{value}</div>
     </div>
   );
 }
