@@ -55,22 +55,30 @@ function CampanhasPage() {
   const [uploading, setUploading] = useState(false);
 
   async function handleFile(file: File) {
-    if (!file.type.startsWith("image/")) { toast.error("Selecione um arquivo de imagem."); return; }
-    if (file.size > 8 * 1024 * 1024) { toast.error("Imagem muito grande (máx. 8MB)."); return; }
+    const isImg = file.type.startsWith("image/");
+    const isVid = file.type.startsWith("video/");
+    if (!isImg && !isVid) { toast.error("Selecione uma imagem ou vídeo."); return; }
+    const maxMB = isVid ? 16 : 8;
+    if (file.size > maxMB * 1024 * 1024) { toast.error(`Arquivo muito grande (máx. ${maxMB}MB).`); return; }
     setUploading(true);
     try {
-      const ext = ((file.name.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "")) || "jpg";
+      const fallback = isVid ? "mp4" : "jpg";
+      const ext = ((file.name.split(".").pop() || fallback).toLowerCase().replace(/[^a-z0-9]/g, "")) || fallback;
       const path = `${crypto.randomUUID()}.${ext}`;
-      const { error } = await supabase.storage.from("campaign-media").upload(path, file, { cacheControl: "3600", upsert: false });
+      const { error } = await supabase.storage.from("campaign-media").upload(path, file, { cacheControl: "3600", upsert: false, contentType: file.type });
       if (error) throw error;
       const { data } = supabase.storage.from("campaign-media").getPublicUrl(path);
       setEditing((prev: any) => ({ ...prev, media_url: data.publicUrl }));
-      toast.success("Imagem anexada!");
+      toast.success(isVid ? "Vídeo anexado!" : "Imagem anexada!");
     } catch (e: any) {
-      toast.error(e?.message || "Falha ao enviar imagem.");
+      toast.error(e?.message || "Falha ao enviar arquivo.");
     } finally {
       setUploading(false);
     }
+  }
+
+  function isVideoUrl(u: string) {
+    return /\.(mp4|mov|webm|3gp|mkv|avi|m4v)(\?|$)/i.test(u);
   }
 
   async function refresh() {
@@ -227,10 +235,14 @@ function CampanhasPage() {
                 <p className="text-xs text-muted-foreground mt-1">Use <code>{"{{nome}}"}</code> para personalizar com o nome do contato.</p>
               </div>
               <div>
-                <Label>Foto (opcional)</Label>
+                <Label>Foto ou vídeo (opcional)</Label>
                 {editing.media_url ? (
                   <div className="mt-1 flex items-center gap-3">
-                    <img src={editing.media_url} alt="Prévia da imagem" className="size-20 rounded-lg object-cover border border-border" />
+                    {isVideoUrl(editing.media_url) ? (
+                      <video src={editing.media_url} className="size-20 rounded-lg object-cover border border-border" muted controls />
+                    ) : (
+                      <img src={editing.media_url} alt="Prévia da mídia" className="size-20 rounded-lg object-cover border border-border" />
+                    )}
                     <Button type="button" variant="outline" size="sm" onClick={() => setEditing({ ...editing, media_url: null })}>
                       <X className="size-4 mr-1" /> Remover
                     </Button>
@@ -239,11 +251,11 @@ function CampanhasPage() {
                   <div className="mt-1">
                     <label className={`inline-flex items-center gap-2 text-sm px-3 py-2 rounded-lg border border-input ${uploading ? "opacity-60" : "cursor-pointer hover:bg-muted"}`}>
                       {uploading ? <Loader2 className="size-4 animate-spin" /> : <ImagePlus className="size-4" />}
-                      {uploading ? "Enviando..." : "Anexar imagem"}
-                      <input type="file" accept="image/*" className="hidden" disabled={uploading}
+                      {uploading ? "Enviando..." : "Anexar imagem ou vídeo"}
+                      <input type="file" accept="image/*,video/*" className="hidden" disabled={uploading}
                         onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleFile(f); e.target.value = ""; }} />
                     </label>
-                    <p className="text-xs text-muted-foreground mt-1">A imagem é enviada junto com a mensagem (a mensagem vira a legenda da foto).</p>
+                    <p className="text-xs text-muted-foreground mt-1">A mídia é enviada junto com a mensagem (a mensagem vira a legenda). Vídeo até 16MB.</p>
                   </div>
                 )}
               </div>

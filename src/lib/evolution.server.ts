@@ -161,14 +161,19 @@ export async function evoSendMedia(
 ) {
   // Evolution v2: POST /message/sendMedia/{instance}
   // `media` aceita URL pública ou base64. Aqui usamos a URL do Supabase Storage.
+  // Detecta imagem x vídeo pela extensão da URL.
+  const lower = mediaUrl.toLowerCase().split("?")[0];
+  const isVideo = /\.(mp4|mov|webm|3gp|mkv|avi|m4v)$/.test(lower);
+  const mediatype = isVideo ? "video" : "image";
+  const fileName = isVideo ? "video.mp4" : "imagem.jpg";
   return evo(`/message/sendMedia/${encodeURIComponent(instanceName)}`, {
     method: "POST",
     json: {
       number,
-      mediatype: "image",
+      mediatype,
       media: mediaUrl,
       caption: caption || "",
-      fileName: "imagem.jpg",
+      fileName,
     },
   });
 }
