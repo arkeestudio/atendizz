@@ -90,6 +90,13 @@ function ConversasPage() {
         },
       )
       .on("postgres_changes",
+        { event: "UPDATE", schema: "public", table: "mensagens", filter: `company_id=eq.${companyId}` },
+        (payload) => {
+          const m = payload.new as Msg;
+          setMsgs((p) => p.map((x) => (x.id === m.id ? { ...x, ...m } : x)));
+        },
+      )
+      .on("postgres_changes",
         { event: "*", schema: "public", table: "contact_pause", filter: `company_id=eq.${companyId}` },
         () => { void loadPauses(companyId); },
       )
