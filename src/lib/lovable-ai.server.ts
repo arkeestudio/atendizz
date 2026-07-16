@@ -75,39 +75,30 @@ export async function geminiTranscribeAudio(base64: string, mimetype?: string): 
   const key = process.env.GEMINI_API_KEY?.trim();
   if (!key || !base64) return "";
   const mime = (mimetype || "audio/ogg").split(";")[0].trim() || "audio/ogg";
-  const model = "gemini-2.5-flash";
-  try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+  const body = {
+    contents: [
       {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                { text: "Transcreva este áudio em português do Brasil. Responda APENAS com o texto falado, sem comentários nem aspas." },
-                { inline_data: { mime_type: mime, data: base64 } },
-              ],
-            },
-          ],
-        }),
+        parts: [
+          { text: "Transcreva este áudio em português do Brasil. Responda APENAS com o texto falado, sem comentários nem aspas." },
+          { inline_data: { mime_type: mime, data: base64 } },
+        ],
       },
-    );
-    if (!res.ok) {
-      console.warn("[gemini.transcribe]", res.status, (await res.text().catch(() => "")).slice(0, 200));
-      return "";
+    ],
+  };
+  // Mesma resiliência do chat: repete se a Google estiver sobrecarregada e cai no lite.
+  const attempts = ["gemini-2.5-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
+  for (let i = 0; i < attempts.length; i++) {
+    try {
+      const res = await geminiFetch(key, attempts[i], body);
+      if (res.ok) return geminiText(await res.json());
+      console.warn("[gemini.transcribe]", res.status, (await res.text().catch(() => "")).slice(0, 160));
+      if (!GEMINI_RETRYABLE.has(res.status)) return "";
+    } catch (e: any) {
+      console.warn("[gemini.transcribe]", e?.message);
     }
-    const data = await res.json();
-    return (data?.candidates?.[0]?.content?.parts || [])
-      .map((p: any) => p?.text)
-      .filter(Boolean)
-      .join(" ")
-      .trim();
-  } catch (e: any) {
-    console.warn("[gemini.transcribe]", e?.message);
-    return "";
+    if (i < attempts.length - 1) await sleep(i === 0 ? 500 : 1200);
   }
+  return "";
 }
 
 async function openAiChat(key: string, model: string, messages: ChatMsg[]): Promise<string> {
@@ -151,6 +142,26 @@ async function anthropicChat(key: string, model: string, messages: ChatMsg[]): P
   return txt;
 }
 
+// Erros transitórios da Google: sobrecarga (503), limite momentâneo (429) e falhas de gateway.
+const GEMINI_RETRYABLE = new Set([429, 500, 502, 503, 504]);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function geminiFetch(key: string, model: string, body: any) {
+  return fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+    body: JSON.stringify(body),
+  });
+}
+
+function geminiText(data: any): string {
+  return (data?.candidates?.[0]?.content?.parts || [])
+    .map((p: any) => p?.text)
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
 async function geminiChat(key: string, model: string, messages: ChatMsg[]): Promise<string> {
   // Google Generative Language API (Gemini) — chamada direta com a chave do usuário.
   const system = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
@@ -160,26 +171,42 @@ async function geminiChat(key: string, model: string, messages: ChatMsg[]): Prom
       role: m.role === "assistant" ? "model" : "user",
       parts: [{ text: m.content }],
     }));
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      body: JSON.stringify({
-        ...(system ? { system_instruction: { parts: [{ text: system }] } } : {}),
-        contents,
-      }),
-    },
-  );
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`Google Gemini: ${res.status} ${t.slice(0, 200)}`);
+  const body = {
+    ...(system ? { system_instruction: { parts: [{ text: system }] } } : {}),
+    contents,
+  };
+
+  // Tenta o modelo escolhido 2x; se seguir sobrecarregado, tenta o flash-lite
+  // (fila de capacidade diferente) pra não deixar o cliente sem resposta.
+  const fallback = /flash(?!-lite)/.test(model) ? "gemini-2.5-flash-lite" : null;
+  const attempts = fallback ? [model, model, fallback] : [model, model];
+  const waits = [500, 1200];
+
+  let lastStatus = 0;
+  let lastBody = "";
+  for (let i = 0; i < attempts.length; i++) {
+    const m = attempts[i];
+    let res: Response;
+    try {
+      res = await geminiFetch(key, m, body);
+    } catch (e: any) {
+      lastBody = e?.message || "falha de rede";
+      if (i < attempts.length - 1) await sleep(waits[i] ?? 1200);
+      continue;
+    }
+    if (res.ok) {
+      if (m !== model) console.warn(`[gemini] ${model} sobrecarregado — respondido com ${m}`);
+      return geminiText(await res.json());
+    }
+    lastStatus = res.status;
+    lastBody = (await res.text().catch(() => "")).slice(0, 200);
+    // Erro definitivo (ex.: 401 chave inválida, 400 modelo inexistente): não adianta repetir.
+    if (!GEMINI_RETRYABLE.has(res.status)) break;
+    if (i < attempts.length - 1) await sleep(waits[i] ?? 1200);
   }
-  const data = await res.json();
-  const txt = (data?.candidates?.[0]?.content?.parts || [])
-    .map((p: any) => p?.text)
-    .filter(Boolean)
-    .join("\n")
-    .trim();
-  return txt;
+
+  if (lastStatus === 503 || lastStatus === 429) {
+    throw new Error("A IA do Google está sobrecarregada no momento (erro temporário). Tente de novo em alguns segundos.");
+  }
+  throw new Error(`Google Gemini: ${lastStatus} ${lastBody}`);
 }
