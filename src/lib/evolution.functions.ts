@@ -80,9 +80,12 @@ export const connectWhatsapp = createServerFn({ method: "POST" })
     try {
       await evoCreateInstance(instanceName, webhookUrl);
     } catch (e: any) {
+      // "já existe" é esperado ao reconectar um número: seguimos para buscar o QR.
       const msg = String(e?.message || "");
-      if (!/exists|already/i.test(msg)) console.warn("[evolution.create]", msg);
-      if (!/exists|already/i.test(msg)) throw e;
+      if (!/exists|already|in use/i.test(msg)) {
+        console.warn("[evolution.create]", msg);
+        throw e;
+      }
     }
 
     if (webhookUrl) {

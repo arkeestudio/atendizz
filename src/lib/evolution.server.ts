@@ -42,10 +42,29 @@ async function evo<T = any>(
     data = { raw: text };
   }
   if (!res.ok) {
-    const msg = data?.message || data?.error || text || `HTTP ${res.status}`;
+    const msg = extractEvoMessage(data, text, res.status);
     throw new Error(`Evolution API: ${msg}.${SUPPORT_SUFFIX}`);
   }
   return data as T;
+}
+
+// A Evolution v2 aninha o detalhe util em response.message (as vezes array) e
+// deixa em `error` so o generico ("Forbidden"). Sem pegar o aninhado, perdemos
+// mensagens como 'This name "..." is already in use.' — que o connectWhatsapp
+// precisa reconhecer pra seguir e buscar o QR em vez de estourar erro.
+function extractEvoMessage(data: any, text: string, status: number): string {
+  const pick = (v: any): string => {
+    if (Array.isArray(v)) return v.filter(Boolean).join(" | ");
+    if (typeof v === "string") return v.trim();
+    return "";
+  };
+  return (
+    pick(data?.response?.message) ||
+    pick(data?.message) ||
+    pick(data?.error) ||
+    (text || "").slice(0, 300) ||
+    `HTTP ${status}`
+  );
 }
 
 export async function evoCreateInstance(instanceName: string, webhookUrl?: string) {
