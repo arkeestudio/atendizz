@@ -43,6 +43,7 @@ async function evo<T = any>(
   }
   if (!res.ok) {
     const msg = extractEvoMessage(data, text, res.status);
+    console.warn(`[evolution] ${init.method || "GET"} ${path} -> ${res.status}`, (text || "").slice(0, 600));
     throw new Error(`Evolution API: ${msg}.${SUPPORT_SUFFIX}`);
   }
   return data as T;
@@ -52,10 +53,31 @@ async function evo<T = any>(
 // deixa em `error` so o generico ("Forbidden"). Sem pegar o aninhado, perdemos
 // mensagens como 'This name "..." is already in use.' — que o connectWhatsapp
 // precisa reconhecer pra seguir e buscar o QR em vez de estourar erro.
+//
+// O `message` tambem pode vir como objeto, ou array de objetos: ai o
+// Array.join() antigo cuspia "[object Object]" e escondia o motivo real do
+// erro. Por isso o pick desce recursivamente e, em ultimo caso, serializa.
 function extractEvoMessage(data: any, text: string, status: number): string {
-  const pick = (v: any): string => {
-    if (Array.isArray(v)) return v.filter(Boolean).join(" | ");
+  const pick = (v: any, depth = 0): string => {
+    if (v == null || depth > 4) return "";
     if (typeof v === "string") return v.trim();
+    if (typeof v === "number" || typeof v === "boolean") return String(v);
+    if (Array.isArray(v)) {
+      return v.map((item) => pick(item, depth + 1)).filter(Boolean).join(" | ");
+    }
+    if (typeof v === "object") {
+      const nested =
+        pick(v.message, depth + 1) ||
+        pick(v.error, depth + 1) ||
+        pick(v.detail, depth + 1) ||
+        pick(v.description, depth + 1);
+      if (nested) return nested;
+      try {
+        return JSON.stringify(v).slice(0, 300);
+      } catch {
+        return "";
+      }
+    }
     return "";
   };
   return (
@@ -278,9 +300,27 @@ export async function evoPurgeInstance(instanceName: string): Promise<void> {
 // reconecta o MESMO numero em vez de emitir QR novo — era esse o bug de "troco
 // de numero e ele conecta no mesmo, sem QR". Entao conferimos o estado e, se
 // continuar aberto, apagamos a instancia.
-export async function evoHardDisconnect(
-  instanceName: string,
-): Promise<{ closed: boolean; deleted: boolean; logoutError?: string }> {
+export type EvoDisconnectResult = {
+  closed: boolean;
+  deleted: boolean;
+  /**
+   * Instancia ZUMBI: a Evolution insiste em connectionStatus "open" mas o
+   * socket do Baileys esta morto, e nem logout nem delete a soltam. Verificado
+   * na v2.3.7 numa sessao encerrada pelo WhatsApp com 401 device_removed:
+   *   DELETE /instance/logout -> 500 ["Error: Connection Closed"]
+   *   DELETE /instance/delete -> 400 ["[object Object]"]
+   *   POST   /instance/restart -> 200, mas nao altera nada
+   *   GET    /instance/connect -> {state:"open"}, sem QR e sem erro
+   * O nome fica inutilizavel pra sempre; a unica saida e criar a instancia com
+   * OUTRO nome (ver nextInstanceName). Pro usuario a linha esta desconectada de
+   * fato, entao contamos como fechada e deixamos a instancia velha orfa.
+   */
+  orphaned: boolean;
+  logoutError?: string;
+  deleteError?: string;
+};
+
+export async function evoHardDisconnect(instanceName: string): Promise<EvoDisconnectResult> {
   let logoutError: string | undefined;
   try {
     await evoLogout(instanceName);
@@ -290,7 +330,7 @@ export async function evoHardDisconnect(
 
   for (let i = 0; i < 4; i++) {
     if ((await evoCurrentState(instanceName)) !== "open") {
-      return { closed: true, deleted: false, logoutError };
+      return { closed: true, deleted: false, orphaned: false, logoutError };
     }
     await sleep(700);
   }
@@ -303,20 +343,40 @@ export async function evoHardDisconnect(
       if ((await evoCurrentState(instanceName)) === null) break;
       await sleep(500);
     }
-    return { closed: true, deleted: true, logoutError };
+    return { closed: true, deleted: true, orphaned: false, logoutError };
   } catch (e: any) {
-    return { closed: false, deleted: false, logoutError: e?.message || logoutError };
+    // Nem logout nem delete pegaram: zumbi. Nao adianta insistir nesse nome.
+    return {
+      closed: true,
+      deleted: false,
+      orphaned: true,
+      logoutError,
+      deleteError: e?.message || String(e),
+    };
   }
 }
 
-export async function evoFetchNumberFromInstance(instanceName: string): Promise<string | null> {
+// Linha da instancia no /instance/fetchInstances. Na v2.3.7 o retorno e um
+// array plano (sem wrapper `instance`), com o numero em `ownerJid` — `number`
+// vem literalmente null. Ler `owner`/`number`, como antes, dava sempre null:
+// era por isso que a tela mostrava "Conectado" sem numero nenhum ao lado.
+export async function evoFetchInstance(instanceName: string): Promise<any | null> {
   try {
     const data: any = await evo(`/instance/fetchInstances?instanceName=${encodeURIComponent(instanceName)}`, {
       method: "GET",
     });
-    const inst = Array.isArray(data) ? data[0] : data?.[0] ?? data;
-    return inst?.instance?.owner || inst?.owner || inst?.number || null;
+    const rows: any[] = Array.isArray(data) ? data : data ? [data] : [];
+    const match = rows.find((r) => (r?.name ?? r?.instance?.instanceName ?? r?.instanceName) === instanceName);
+    const row = match ?? rows[0] ?? null;
+    return row?.instance ?? row;
   } catch {
     return null;
   }
+}
+
+export async function evoFetchNumberFromInstance(instanceName: string): Promise<string | null> {
+  const inst = await evoFetchInstance(instanceName);
+  const jid: string = inst?.ownerJid || inst?.owner || inst?.number || "";
+  const digits = String(jid).split("@")[0].split(":")[0].replace(/\D/g, "");
+  return digits || null;
 }

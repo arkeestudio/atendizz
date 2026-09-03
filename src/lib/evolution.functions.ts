@@ -6,6 +6,18 @@ function deriveInstanceName(companyId: string) {
   return `atendezap_${companyId.replace(/-/g, "").slice(0, 16)}`;
 }
 
+// Nome da PROXIMA geracao da instancia. Um nome pode ficar inutilizavel na
+// Evolution (zumbi: status "open" eterno, sem QR, imune a logout/delete — ver
+// EvoDisconnectResult.orphaned). Como o nome era derivado só do companyId, a
+// empresa ficava presa a ele pra sempre. O sufixo _r<n> dá uma instância nova e
+// limpa, e por ser incremental se auto-cura caso a nova também envenene.
+function nextInstanceName(companyId: string, current?: string | null) {
+  const base = deriveInstanceName(companyId);
+  const match = current ? /_r(\d+)$/.exec(current) : null;
+  const gen = match ? Number(match[1]) + 1 : 2;
+  return `${base}_r${gen}`;
+}
+
 function buildWebhookUrl(token?: string | null) {
   try {
     const req = getRequest();
@@ -33,7 +45,7 @@ async function resolveCompanyId(supabase: any, userId: string): Promise<string> 
 
 export const connectWhatsapp = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  // `force` = "trocar número": derruba e apaga a instância antes de pedir o QR.
+  // `force` = "trocar número": derruba a sessão atual antes de pedir o QR.
   .inputValidator((d?: { force?: boolean } | null) => ({ force: !!d?.force }))
   .handler(async ({ context, data }) => {
     const { supabase, userId } = context;
@@ -43,7 +55,7 @@ export const connectWhatsapp = createServerFn({ method: "POST" })
       evoGetQr,
       evoSetWebhook,
       evoCurrentState,
-      evoPurgeInstance,
+      evoHardDisconnect,
       parseQrPayload,
     } = await import("./evolution.server");
 
@@ -52,13 +64,12 @@ export const connectWhatsapp = createServerFn({ method: "POST" })
       .select("instance_name,status,numero,webhook_token")
       .eq("company_id", companyId)
       .maybeSingle();
-    const instanceName = existing?.instance_name || deriveInstanceName(companyId);
     const webhookToken = existing?.webhook_token || crypto.randomUUID();
     const webhookUrl = buildWebhookUrl(webhookToken);
+    let instanceName: string = existing?.instance_name || deriveInstanceName(companyId);
 
     if (existing?.instance_name && !data.force) {
-      const existingState = await evoCurrentState(existing.instance_name);
-      if (existingState === "open") {
+      if ((await evoCurrentState(existing.instance_name)) === "open") {
         if (webhookUrl) {
           try { await evoSetWebhook(existing.instance_name, webhookUrl); } catch (e) { console.warn("[evolution.setWebhook]", e); }
         }
@@ -72,63 +83,83 @@ export const connectWhatsapp = createServerFn({ method: "POST" })
       }
     }
 
-    // Trocar número exige instância zerada: sem isso o /instance/connect
-    // reconecta com as credenciais antigas do Baileys — mesmo número, sem QR.
+    // Trocar número exige instância zerada: reaproveitá-la faz o Baileys
+    // reconectar com as credenciais antigas em disco — mesmo número, sem QR.
     if (existing?.instance_name && data.force) {
-      await evoPurgeInstance(existing.instance_name);
-      await supabase
-        .from("whatsapp_instances")
-        .update({ status: "connecting", numero: null, webhook_configured_at: null } as any)
-        .eq("company_id", companyId);
-    }
-
-    await supabase
-      .from("whatsapp_instances")
-      .upsert(
-        { company_id: companyId, user_id: userId, instance_name: instanceName, status: "connecting", webhook_token: webhookToken } as any,
-        { onConflict: "company_id" },
-      );
-
-    let qrBase64: string | null = null;
-    let code: string | null = null;
-
-    try {
-      // Com qrcode:true o próprio /instance/create já devolve o QR.
-      const created: any = await evoCreateInstance(instanceName, webhookUrl);
-      const fromCreate = await parseQrPayload(created?.qrcode ?? created);
-      qrBase64 = fromCreate.qrBase64;
-      code = fromCreate.code;
-    } catch (e: any) {
-      // "já existe" é esperado ao reconectar o mesmo número: seguimos pro QR.
-      const msg = String(e?.message || "");
-      if (!/exists|already|in use/i.test(msg)) {
-        console.warn("[evolution.create]", msg);
-        throw e;
+      const dropped = await evoHardDisconnect(existing.instance_name);
+      if (dropped.orphaned) {
+        instanceName = nextInstanceName(companyId, existing.instance_name);
+        console.warn("[evolution] instância órfã, rotacionando nome", {
+          de: existing.instance_name,
+          para: instanceName,
+          logout: dropped.logoutError,
+          delete: dropped.deleteError,
+        });
       }
     }
 
-    if (webhookUrl) {
-      try { await evoSetWebhook(instanceName, webhookUrl); } catch (e) { console.warn("[evolution.setWebhook]", e); }
-    }
+    const persist = async (name: string) => {
+      await supabase
+        .from("whatsapp_instances")
+        .upsert(
+          { company_id: companyId, user_id: userId, instance_name: name, status: "connecting", webhook_token: webhookToken, numero: null, webhook_configured_at: null } as any,
+          { onConflict: "company_id" },
+        );
+    };
 
-    let lastQrError: unknown = null;
-    for (let i = 0; !qrBase64 && !code && i < 6; i++) {
+    const acquireQr = async (name: string) => {
       try {
-        const qr = await evoGetQr(instanceName);
-        qrBase64 = qr.qrBase64;
-        code = qr.code;
-        if (qrBase64 || code) break;
-      } catch (e) { lastQrError = e; console.warn("[evolution.connect]", e); }
-      await new Promise((r) => setTimeout(r, 800));
+        // Com qrcode:true o próprio /instance/create já devolve o QR.
+        const created: any = await evoCreateInstance(name, webhookUrl);
+        const fromCreate = await parseQrPayload(created?.qrcode ?? created);
+        if (fromCreate.qrBase64 || fromCreate.code) return fromCreate;
+      } catch (e: any) {
+        // "já existe" é esperado ao reconectar o mesmo número: seguimos pro QR.
+        const msg = String(e?.message || "");
+        if (!/exists|already|in use/i.test(msg)) {
+          console.warn("[evolution.create]", msg);
+          throw e;
+        }
+      }
+
+      if (webhookUrl) {
+        try { await evoSetWebhook(name, webhookUrl); } catch (e) { console.warn("[evolution.setWebhook]", e); }
+      }
+
+      let lastQrError: unknown = null;
+      for (let i = 0; i < 6; i++) {
+        try {
+          const qr = await evoGetQr(name);
+          if (qr.qrBase64 || qr.code) return qr;
+        } catch (e) { lastQrError = e; console.warn("[evolution.connect]", e); }
+        await new Promise((r) => setTimeout(r, 800));
+      }
+      if (lastQrError) throw lastQrError;
+      return { qrBase64: null, code: null, pairingCode: null };
+    };
+
+    await persist(instanceName);
+    let qr = await acquireQr(instanceName);
+
+    // QR vazio, sem erro nenhum, e a Evolution dizendo "open": assinatura exata
+    // da instância zumbi — o /instance/connect responde {state:"open"} e nunca
+    // emite QR. Antes isso voltava em silêncio e a tela ficava vazia pra sempre.
+    // O nome não tem recuperação; a saída é uma instância nova.
+    if (!qr.qrBase64 && !qr.code && (await evoCurrentState(instanceName)) === "open") {
+      const rotated = nextInstanceName(companyId, instanceName);
+      console.warn("[evolution] sem QR com state=open (zumbi), rotacionando nome", { de: instanceName, para: rotated });
+      instanceName = rotated;
+      await persist(instanceName);
+      qr = await acquireQr(instanceName);
     }
 
-    if (!qrBase64 && !code && lastQrError) {
-      throw lastQrError;
+    if (!qr.qrBase64 && !qr.code) {
+      throw new Error("O servidor do WhatsApp não devolveu o QR Code. Tente novamente em alguns segundos.");
     }
 
     const state = (await evoCurrentState(instanceName)) ?? undefined;
 
-    return { instanceName, qrBase64, code, state, webhookUrl };
+    return { instanceName, qrBase64: qr.qrBase64, code: qr.code, state, webhookUrl };
   });
 
 export const checkWhatsappStatus = createServerFn({ method: "POST" })
@@ -209,15 +240,26 @@ export const disconnectWhatsapp = createServerFn({ method: "POST" })
       .maybeSingle();
     if (!row) return { ok: true };
 
-    const { closed, deleted, logoutError } = await evoHardDisconnect(row.instance_name);
+    const { closed, deleted, orphaned, logoutError, deleteError } = await evoHardDisconnect(row.instance_name);
     if (logoutError) console.warn("[evolution.logout]", logoutError);
+    if (deleteError) console.warn("[evolution.delete]", deleteError);
+    if (orphaned) {
+      // Zumbi: a Evolution não solta a instância, mas o socket está morto — a
+      // linha não atende mesmo. Marcamos desconectado e o próximo "Conectar"
+      // rotaciona o nome (nextInstanceName) pra sair do nome envenenado.
+      console.warn("[evolution] instância órfã em disconnect", { instancia: row.instance_name });
+    }
 
     // Só marca desconectado se a sessão realmente caiu. Marcar antes fazia a UI
     // mostrar "Desconectado" com a sessão viva no servidor — e o "Conectar" em
     // seguida reconhecia state=open e voltava sem QR, no número antigo.
     if (!closed) {
+      const detail = [
+        logoutError ? `logout: ${logoutError}` : null,
+        deleteError ? `delete: ${deleteError}` : null,
+      ].filter(Boolean).join(" / ");
       throw new Error(
-        `Não foi possível encerrar a sessão no servidor do WhatsApp${logoutError ? `: ${logoutError}` : ""}. Tente novamente em alguns segundos.`,
+        `Não foi possível encerrar a sessão no servidor do WhatsApp${detail ? ` (${detail})` : ""}. Tente novamente em alguns segundos.`,
       );
     }
 
@@ -226,7 +268,7 @@ export const disconnectWhatsapp = createServerFn({ method: "POST" })
       .update({ status: "disconnected", numero: null, webhook_configured_at: null } as any)
       .eq("company_id", companyId);
 
-    return { ok: true, deleted };
+    return { ok: true, deleted, orphaned };
   });
 
 export const sendWhatsappText = createServerFn({ method: "POST" })
