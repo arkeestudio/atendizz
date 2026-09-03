@@ -78,10 +78,10 @@ function ConexaoPage() {
     } catch (e: any) { if (!silent) toast.error(e?.message || "Erro ao consultar status"); }
   }
 
-  async function doConnect() {
+  async function doConnect(force = false) {
     setLoading(true); setQr(null);
     try {
-      const r = await connect();
+      const r = await connect({ data: { force } });
       setQr(r.qrBase64 ?? null);
       setStatus(r.state === "open" ? "connected" : "connecting");
       if (r.state === "open") toast.success("Já está conectado!");
@@ -89,6 +89,15 @@ function ConexaoPage() {
       else { toast.message("Instância criada. Buscando QR…"); startPolling(); }
     } catch (e: any) { toast.error(e?.message || "Falha ao conectar"); }
     finally { setLoading(false); }
+  }
+
+  async function doSwitchNumber() {
+    const ok = window.confirm(
+      "Isso desconecta o número atual e gera um QR Code novo para pareá-lo com outro celular. Continuar?",
+    );
+    if (!ok) return;
+    setNumero(null);
+    await doConnect(true);
   }
 
   async function doDisconnect() {
@@ -133,11 +142,17 @@ function ConexaoPage() {
               <RefreshCw className="size-4 mr-1.5" /> Atualizar
             </Button>
             {status === "connected" ? (
-              <Button variant="destructive" size="sm" onClick={doDisconnect} disabled={loading}>
-                <Power className="size-4 mr-1.5" /> Desconectar
-              </Button>
+              <>
+                <Button variant="outline" size="sm" onClick={doSwitchNumber} disabled={loading}>
+                  {loading ? <Loader2 className="size-4 mr-1.5 animate-spin" /> : <QrCode className="size-4 mr-1.5" />}
+                  Trocar número
+                </Button>
+                <Button variant="destructive" size="sm" onClick={doDisconnect} disabled={loading}>
+                  <Power className="size-4 mr-1.5" /> Desconectar
+                </Button>
+              </>
             ) : (
-              <Button size="sm" onClick={doConnect} disabled={loading}>
+              <Button size="sm" onClick={() => doConnect(!!qr)} disabled={loading}>
                 {loading ? <Loader2 className="size-4 mr-1.5 animate-spin" /> : <QrCode className="size-4 mr-1.5" />}
                 {qr ? "Gerar novo QR" : "Conectar WhatsApp"}
               </Button>

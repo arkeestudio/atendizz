@@ -128,8 +128,7 @@ function extractQrCode(payload: any): string | null {
   return null;
 }
 
-export async function evoGetQr(instanceName: string): Promise<{ qrBase64: string | null; code: string | null; pairingCode: string | null }> {
-  const payload: any = await evoConnect(instanceName);
+export async function parseQrPayload(payload: any): Promise<{ qrBase64: string | null; code: string | null; pairingCode: string | null }> {
   const image =
     asImageDataUrl(payload?.base64, true) ||
     asImageDataUrl(payload?.qrcode?.base64, true) ||
@@ -144,6 +143,10 @@ export async function evoGetQr(instanceName: string): Promise<{ qrBase64: string
     return { qrBase64, code, pairingCode: payload?.pairingCode ?? payload?.qrcode?.pairingCode ?? null };
   }
   return { qrBase64: null, code: null, pairingCode: payload?.pairingCode ?? payload?.qrcode?.pairingCode ?? null };
+}
+
+export async function evoGetQr(instanceName: string) {
+  return parseQrPayload(await evoConnect(instanceName));
 }
 
 export async function evoState(instanceName: string): Promise<{ instance?: { state?: string }; state?: string }> {
@@ -234,6 +237,76 @@ export async function evoLogout(instanceName: string) {
 
 export async function evoDelete(instanceName: string) {
   return evo(`/instance/delete/${encodeURIComponent(instanceName)}`, { method: "DELETE" });
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Estado atual sem estourar: 404 (instancia inexistente) e erros de rede viram
+// null, que pra efeito de "esta desconectado?" conta como fechado.
+export async function evoCurrentState(instanceName: string): Promise<string | null> {
+  try {
+    const s = await evoState(instanceName);
+    return s?.instance?.state || (s as any)?.state || null;
+  } catch {
+    return null;
+  }
+}
+
+// Zera a instancia: logout + delete, esperando ela desaparecer. Usado ao TROCAR
+// de numero — reaproveitar a instancia existente faz o Baileys reconectar com
+// as credenciais antigas em disco, ou seja, volta o mesmo numero e sem QR.
+export async function evoPurgeInstance(instanceName: string): Promise<void> {
+  try {
+    await evoLogout(instanceName);
+  } catch (e: any) {
+    console.warn("[evolution.logout]", e?.message || e);
+  }
+  try {
+    await evoDelete(instanceName);
+  } catch (e: any) {
+    console.warn("[evolution.delete]", e?.message || e);
+  }
+  for (let i = 0; i < 8; i++) {
+    if ((await evoCurrentState(instanceName)) === null) return;
+    await sleep(500);
+  }
+}
+
+// Derruba a sessao DE VERDADE. O /instance/logout da Evolution as vezes
+// responde erro (Forbidden/404) ou responde ok e deixa a sessao aberta com as
+// credenciais do Baileys em disco. Nos dois casos o /instance/connect seguinte
+// reconecta o MESMO numero em vez de emitir QR novo — era esse o bug de "troco
+// de numero e ele conecta no mesmo, sem QR". Entao conferimos o estado e, se
+// continuar aberto, apagamos a instancia.
+export async function evoHardDisconnect(
+  instanceName: string,
+): Promise<{ closed: boolean; deleted: boolean; logoutError?: string }> {
+  let logoutError: string | undefined;
+  try {
+    await evoLogout(instanceName);
+  } catch (e: any) {
+    logoutError = e?.message || String(e);
+  }
+
+  for (let i = 0; i < 4; i++) {
+    if ((await evoCurrentState(instanceName)) !== "open") {
+      return { closed: true, deleted: false, logoutError };
+    }
+    await sleep(700);
+  }
+
+  try {
+    await evoDelete(instanceName);
+    // Espera o delete propagar, senao o /instance/create seguinte volta
+    // "already in use".
+    for (let i = 0; i < 6; i++) {
+      if ((await evoCurrentState(instanceName)) === null) break;
+      await sleep(500);
+    }
+    return { closed: true, deleted: true, logoutError };
+  } catch (e: any) {
+    return { closed: false, deleted: false, logoutError: e?.message || logoutError };
+  }
 }
 
 export async function evoFetchNumberFromInstance(instanceName: string): Promise<string | null> {

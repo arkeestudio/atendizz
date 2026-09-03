@@ -33,14 +33,18 @@ async function resolveCompanyId(supabase: any, userId: string): Promise<string> 
 
 export const connectWhatsapp = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .handler(async ({ context }) => {
+  // `force` = "trocar número": derruba e apaga a instância antes de pedir o QR.
+  .inputValidator((d?: { force?: boolean } | null) => ({ force: !!d?.force }))
+  .handler(async ({ context, data }) => {
     const { supabase, userId } = context;
     const companyId = await resolveCompanyId(supabase, userId);
     const {
       evoCreateInstance,
       evoGetQr,
       evoSetWebhook,
-      evoState,
+      evoCurrentState,
+      evoPurgeInstance,
+      parseQrPayload,
     } = await import("./evolution.server");
 
     const { data: existing } = await (supabase as any)
@@ -51,23 +55,31 @@ export const connectWhatsapp = createServerFn({ method: "POST" })
     const instanceName = existing?.instance_name || deriveInstanceName(companyId);
     const webhookToken = existing?.webhook_token || crypto.randomUUID();
     const webhookUrl = buildWebhookUrl(webhookToken);
-    if (existing?.instance_name) {
-      try {
-        const s = await evoState(existing.instance_name);
-        const existingState = s?.instance?.state || (s as any)?.state;
-        if (existingState === "open") {
-          if (webhookUrl) {
-            try { await evoSetWebhook(existing.instance_name, webhookUrl); } catch (e) { console.warn("[evolution.setWebhook]", e); }
-          }
-          if (existing.status !== "connected") {
-            await supabase
-              .from("whatsapp_instances")
-              .update({ status: "connected", webhook_token: webhookToken, webhook_configured_at: new Date().toISOString() } as any)
-              .eq("company_id", companyId);
-          }
-          return { instanceName: existing.instance_name, qrBase64: null, code: null, state: "open", webhookUrl };
+
+    if (existing?.instance_name && !data.force) {
+      const existingState = await evoCurrentState(existing.instance_name);
+      if (existingState === "open") {
+        if (webhookUrl) {
+          try { await evoSetWebhook(existing.instance_name, webhookUrl); } catch (e) { console.warn("[evolution.setWebhook]", e); }
         }
-      } catch {}
+        if (existing.status !== "connected") {
+          await supabase
+            .from("whatsapp_instances")
+            .update({ status: "connected", webhook_token: webhookToken, webhook_configured_at: new Date().toISOString() } as any)
+            .eq("company_id", companyId);
+        }
+        return { instanceName: existing.instance_name, qrBase64: null, code: null, state: "open", webhookUrl };
+      }
+    }
+
+    // Trocar número exige instância zerada: sem isso o /instance/connect
+    // reconecta com as credenciais antigas do Baileys — mesmo número, sem QR.
+    if (existing?.instance_name && data.force) {
+      await evoPurgeInstance(existing.instance_name);
+      await supabase
+        .from("whatsapp_instances")
+        .update({ status: "connecting", numero: null, webhook_configured_at: null } as any)
+        .eq("company_id", companyId);
     }
 
     await supabase
@@ -77,10 +89,17 @@ export const connectWhatsapp = createServerFn({ method: "POST" })
         { onConflict: "company_id" },
       );
 
+    let qrBase64: string | null = null;
+    let code: string | null = null;
+
     try {
-      await evoCreateInstance(instanceName, webhookUrl);
+      // Com qrcode:true o próprio /instance/create já devolve o QR.
+      const created: any = await evoCreateInstance(instanceName, webhookUrl);
+      const fromCreate = await parseQrPayload(created?.qrcode ?? created);
+      qrBase64 = fromCreate.qrBase64;
+      code = fromCreate.code;
     } catch (e: any) {
-      // "já existe" é esperado ao reconectar um número: seguimos para buscar o QR.
+      // "já existe" é esperado ao reconectar o mesmo número: seguimos pro QR.
       const msg = String(e?.message || "");
       if (!/exists|already|in use/i.test(msg)) {
         console.warn("[evolution.create]", msg);
@@ -92,10 +111,8 @@ export const connectWhatsapp = createServerFn({ method: "POST" })
       try { await evoSetWebhook(instanceName, webhookUrl); } catch (e) { console.warn("[evolution.setWebhook]", e); }
     }
 
-    let qrBase64: string | null = null;
-    let code: string | null = null;
     let lastQrError: unknown = null;
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; !qrBase64 && !code && i < 6; i++) {
       try {
         const qr = await evoGetQr(instanceName);
         qrBase64 = qr.qrBase64;
@@ -109,11 +126,7 @@ export const connectWhatsapp = createServerFn({ method: "POST" })
       throw lastQrError;
     }
 
-    let state: string | undefined;
-    try {
-      const s = await evoState(instanceName);
-      state = s?.instance?.state || (s as any)?.state;
-    } catch {}
+    const state = (await evoCurrentState(instanceName)) ?? undefined;
 
     return { instanceName, qrBase64, code, state, webhookUrl };
   });
@@ -188,20 +201,32 @@ export const disconnectWhatsapp = createServerFn({ method: "POST" })
   .handler(async ({ context }) => {
     const { supabase, userId } = context;
     const companyId = await resolveCompanyId(supabase, userId);
-    const { evoLogout } = await import("./evolution.server");
+    const { evoHardDisconnect } = await import("./evolution.server");
     const { data: row } = await supabase
       .from("whatsapp_instances")
       .select("instance_name")
       .eq("company_id", companyId)
       .maybeSingle();
-    if (row) {
-      try { await evoLogout(row.instance_name); } catch (e) { console.warn("[evolution.logout]", e); }
-      await supabase
-        .from("whatsapp_instances")
-        .update({ status: "disconnected" })
-        .eq("company_id", companyId);
+    if (!row) return { ok: true };
+
+    const { closed, deleted, logoutError } = await evoHardDisconnect(row.instance_name);
+    if (logoutError) console.warn("[evolution.logout]", logoutError);
+
+    // Só marca desconectado se a sessão realmente caiu. Marcar antes fazia a UI
+    // mostrar "Desconectado" com a sessão viva no servidor — e o "Conectar" em
+    // seguida reconhecia state=open e voltava sem QR, no número antigo.
+    if (!closed) {
+      throw new Error(
+        `Não foi possível encerrar a sessão no servidor do WhatsApp${logoutError ? `: ${logoutError}` : ""}. Tente novamente em alguns segundos.`,
+      );
     }
-    return { ok: true };
+
+    await supabase
+      .from("whatsapp_instances")
+      .update({ status: "disconnected", numero: null, webhook_configured_at: null } as any)
+      .eq("company_id", companyId);
+
+    return { ok: true, deleted };
   });
 
 export const sendWhatsappText = createServerFn({ method: "POST" })
